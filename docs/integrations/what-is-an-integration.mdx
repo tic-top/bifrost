@@ -179,6 +179,14 @@ response = requests.post(
 
 All integrations support listing available models through their respective list models endpoints (e.g., `/openai/v1/models`, `/anthropic/v1/models`). By default, list models requests return models from **all configured providers** in Bifrost.
 
+### Muse Code catalog compatibility
+
+Meta Muse Code checks a vendor-specific catalog before it sends its first
+Responses request to a custom gateway. Bifrost serves the same configured model
+list in Muse's expected shape at both `GET /muse-code/models` and
+`GET /v1/muse-code/models`. Set Muse's base URL to Bifrost's standard `/v1`
+base; inference continues through `POST /v1/responses`.
+
 ### Filtering by Provider
 
 You can control which provider's models to list using the `x-bf-list-models-provider` header:
