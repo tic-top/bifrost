@@ -39,6 +39,21 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	assert.True(t, stream)
 }
 
+func TestPassthroughSafeHeadersDropsInternalSessionID(t *testing.T) {
+	var header fasthttp.RequestHeader
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Client-Trace", "trace-123")
+	header.Set("X-Bf-Session-Id", "genai-session")
+	header.Set("Authorization", "Bearer caller-secret")
+
+	got := collectPassthroughSafeHeaders(&header)
+
+	assert.Equal(t, "application/json", got["content-type"])
+	assert.Equal(t, "trace-123", got["x-client-trace"])
+	assert.NotContains(t, got, "x-bf-session-id", "gateway session metadata must never reach GenAI or another upstream")
+	assert.NotContains(t, got, "authorization", "provider credentials are injected by Bifrost")
+}
+
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})

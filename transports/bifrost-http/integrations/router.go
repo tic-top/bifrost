@@ -3242,11 +3242,9 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 	return
 }
 
-func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
-	cfg := g.passthroughCfg
-
+func collectPassthroughSafeHeaders(header *fasthttp.RequestHeader) map[string]string {
 	safeHeaders := make(map[string]string)
-	ctx.Request.Header.All()(func(key, value []byte) bool {
+	header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		switch keyStr {
 		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
@@ -3259,6 +3257,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		}
 		return true
 	})
+	return safeHeaders
+}
+
+func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
+	cfg := g.passthroughCfg
+
+	safeHeaders := collectPassthroughSafeHeaders(&ctx.Request.Header)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 

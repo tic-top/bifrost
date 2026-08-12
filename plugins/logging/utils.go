@@ -875,6 +875,12 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 	}
 
 	set("realtime_session_id", schemas.BifrostContextKeyRealtimeSessionID)
+	// Passthrough clients can carry a stable rollout/session identifier in
+	// x-bf-session-id (including the /s/<id>/... URL form normalized by the HTTP
+	// middleware). Persist it as ordinary log metadata so an asynchronous export
+	// can reconstruct per-agent trajectories without putting a recorder on the
+	// latency-sensitive forwarding path.
+	set("session_id", schemas.BifrostContextKeySessionID)
 	set("provider_session_id", schemas.BifrostContextKeyRealtimeProviderSessionID)
 	set("realtime_source", schemas.BifrostContextKeyRealtimeSource)
 	set("realtime_event_type", schemas.BifrostContextKeyRealtimeEventType)
