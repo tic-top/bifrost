@@ -110,6 +110,20 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			description:              "Reasoning models (o1/o3) produce encrypted content; should be preserved for multi-turn",
 		},
 		{
+			name:  "Muse encrypted reasoning is preserved for replay",
+			model: "muse-spark-1.2-contributor",
+			message: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{},
+					EncryptedContent: schemas.Ptr("muse-encrypted"),
+				},
+			},
+			expectedIncluded:         true,
+			expectedEncryptedContent: schemas.Ptr("muse-encrypted"),
+			description:              "Meta Muse uses OpenAI Responses encrypted_content for stateless multi-turn reasoning replay",
+		},
+		{
 			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",
 			model: "gpt-4o",
 			message: schemas.ResponsesMessage{
@@ -323,6 +337,12 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			model:    "gpt-5.4",
 			effort:   "xhigh",
 			expected: "xhigh",
+		},
+		{
+			name:     "preserves medium for Meta Muse",
+			model:    "muse-spark-1.2-contributor",
+			effort:   "medium",
+			expected: "medium",
 		},
 		{
 			name:     "preserves xhigh for gpt-5.2",

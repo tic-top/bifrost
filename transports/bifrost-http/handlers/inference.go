@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1959,7 +1960,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
 	// access after the handler returns (fasthttp recycles RequestCtx).
 	var completerSlot atomic.Value
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	transportPostHooksActive, _ := bifrostCtx.Value(schemas.BifrostContextKeyTransportPostHooksActive).(bool)
+	if transportPostHooksActive {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	}
 
 	// Get the trace completer function for use in the streaming callback.
 	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
@@ -1976,6 +1980,19 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// which batches multiple SSE events into single TCP segments.
 	// Each event is delivered individually via a channel, ensuring one HTTP chunk per event.
 	reader := lib.NewSSEStreamReader()
+	var clientRequestBody []byte
+	clientWireMetadata := schemas.ClientWireMetadata{
+		Method:     string(ctx.Method()),
+		Path:       string(ctx.Path()),
+		RawQuery:   string(ctx.URI().QueryString()),
+		StatusCode: ctx.Response.StatusCode(),
+	}
+	clientWireRecorder, _ := bifrostCtx.Value(schemas.BifrostContextKeyClientWireRecorder).(schemas.ClientWireRecorder)
+	shouldStoreClientWire, _ := bifrostCtx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	if clientWireRecorder != nil && shouldStoreClientWire {
+		clientRequestBody = bytes.Clone(ctx.Request.Body())
+		reader.EnableCapture()
+	}
 	ctx.Response.SetBodyStream(reader, -1)
 
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
@@ -1987,7 +2004,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// client sees them (happy path, before [DONE]); =false logs server-side only
 		// (early-return / defer fallback, after stream termination).
 		runCompleter := func(sendSSEOnError bool) {
-			if completerRan {
+			if completerRan || !transportPostHooksActive {
 				return
 			}
 			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
@@ -2045,6 +2062,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
 			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
+			if clientWireRecorder != nil && shouldStoreClientWire {
+				clientWireRecorder(bifrostCtx, clientWireMetadata, clientRequestBody, reader.CapturedBytes())
+			}
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.

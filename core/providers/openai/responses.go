@@ -185,7 +185,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 		if message.ResponsesReasoning != nil {
 			isGptOss := strings.Contains(capModel, "gpt-oss")
-			isReasoning := isOpenAIReasoningModel(capModel)
+			isReasoning := supportsOpenAIResponsesReasoningReplay(capModel)
 
 			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
 			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
@@ -342,7 +342,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(capModel) {
+			if bifrostReq.Provider == schemas.OpenAI && !supportsOpenAIResponsesReasoningReplay(capModel) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
