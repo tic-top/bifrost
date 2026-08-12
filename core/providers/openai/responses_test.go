@@ -10,6 +10,44 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestWithoutResponseInputItemStatePreservesConversationEdges(t *testing.T) {
+	originalID := "item-connection-scoped"
+	callID := "call-stable"
+	encryptedContent := "provider-connection-scoped"
+	req := &schemas.BifrostResponsesRequest{
+		Input: []schemas.ResponsesMessage{{
+			ID: &originalID,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &callID,
+			},
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				EncryptedContent: &encryptedContent,
+			},
+		}},
+	}
+
+	converted := withoutResponseInputItemState(req)
+
+	if converted == req {
+		t.Fatal("expected a cloned request")
+	}
+	if converted.Input[0].ID != nil {
+		t.Fatalf("replayed item ID was not stripped: %q", *converted.Input[0].ID)
+	}
+	if converted.Input[0].CallID == nil || *converted.Input[0].CallID != callID {
+		t.Fatal("tool call_id conversation edge was changed")
+	}
+	if converted.Input[0].ResponsesReasoning.EncryptedContent != nil {
+		t.Fatal("replayed encrypted reasoning state was not stripped")
+	}
+	if req.Input[0].ID == nil || *req.Input[0].ID != originalID {
+		t.Fatal("original request was mutated")
+	}
+	if req.Input[0].ResponsesReasoning.EncryptedContent == nil || *req.Input[0].ResponsesReasoning.EncryptedContent != encryptedContent {
+		t.Fatal("original reasoning state was mutated")
+	}
+}
+
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
 		name                     string

@@ -24,14 +24,15 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
-	disableStore         bool                          // Whether to force store=false on outgoing requests
+	logger                      schemas.Logger                // Logger for provider operations
+	client                      *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient             *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig               schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest          bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse         bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig        *schemas.CustomProviderConfig // Custom provider config
+	disableStore                bool                          // Whether to force store=false on outgoing requests
+	stripResponseInputItemState bool                          // Whether to omit replayed provider-scoped Responses input state
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -68,15 +69,37 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:               logger,
-		client:               client,
-		streamingClient:      streamingClient,
-		networkConfig:        config.NetworkConfig,
-		sendBackRawRequest:   config.SendBackRawRequest,
-		sendBackRawResponse:  config.SendBackRawResponse,
-		customProviderConfig: config.CustomProviderConfig,
-		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		logger:                      logger,
+		client:                      client,
+		streamingClient:             streamingClient,
+		networkConfig:               config.NetworkConfig,
+		sendBackRawRequest:          config.SendBackRawRequest,
+		sendBackRawResponse:         config.SendBackRawResponse,
+		customProviderConfig:        config.CustomProviderConfig,
+		disableStore:                config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		stripResponseInputItemState: config.OpenAIConfig != nil && config.OpenAIConfig.StripResponseInputItemState,
 	}
+}
+
+// withoutResponseInputItemState clones the request's input slice and removes
+// provider-issued state that some stateless OpenAI-compatible gateways reject
+// when it is replayed on another connection. call_id and the reasoning item
+// itself stay intact so tool-call and conversation ordering are preserved.
+func withoutResponseInputItemState(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil || len(request.Input) == 0 {
+		return request
+	}
+	cloned := *request
+	cloned.Input = append([]schemas.ResponsesMessage(nil), request.Input...)
+	for i := range cloned.Input {
+		cloned.Input[i].ID = nil
+		if cloned.Input[i].ResponsesReasoning != nil && cloned.Input[i].ResponsesReasoning.EncryptedContent != nil {
+			reasoning := *cloned.Input[i].ResponsesReasoning
+			reasoning.EncryptedContent = nil
+			cloned.Input[i].ResponsesReasoning = &reasoning
+		}
+	}
+	return &cloned
 }
 
 // GetProviderKey returns the provider identifier for OpenAI.
@@ -1509,6 +1532,9 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
+	if provider.stripResponseInputItemState {
+		request = withoutResponseInputItemState(request)
+	}
 
 	if provider.disableStore {
 		if request.Params == nil {
@@ -1688,6 +1714,9 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+	if provider.stripResponseInputItemState {
+		request = withoutResponseInputItemState(request)
 	}
 	if provider.disableStore {
 		if request.Params == nil {

@@ -562,7 +562,8 @@ type ProviderConfig struct {
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
-	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	DisableStore                bool `json:"disable_store"`                   // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	StripResponseInputItemState bool `json:"strip_response_input_item_state"` // Compatibility for gateways that reject replayed provider-scoped Responses state
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
