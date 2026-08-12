@@ -2774,9 +2774,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		// AWS SDKs (e.g. Go SDK v2) don't silently drop an unmodeled `:event-type` -- they
 		// surface it to the caller as a typed union member (types.UnknownUnionMember). So
 		// Bedrock streams stay on purely reactive (write-failure-based) disconnect detection.
+		// GenAI also cannot receive comment frames: the official Google GenAI SDK's
+		// streaming parser only consumes `data:` records and retains SSE comments in
+		// its buffer, then raises "Incomplete JSON segment at the end" at EOF.  This
+		// is observable in Gemini CLI, so native GenAI compatibility takes priority
+		// over proactive idle disconnect detection on that route.
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
-		if config.Type != RouteConfigTypeBedrock {
+		if config.Type != RouteConfigTypeBedrock && config.Type != RouteConfigTypeGenAI {
 			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 		}
 
