@@ -37,18 +37,20 @@ var realtimeTransportPaths = buildRealtimeTransportPathSet()
 func SessionPathMiddleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			if !bytes.HasPrefix(ctx.Path(), []byte("/s/")) {
+				next(ctx)
+				return
+			}
 			rawURI := string(ctx.RequestURI())
 			path, query, hasQuery := strings.Cut(rawURI, "?")
-			if strings.HasPrefix(path, "/s/") {
-				sessionID, tail, found := strings.Cut(strings.TrimPrefix(path, "/s/"), "/")
-				if found && tail != "" && validSessionPathID(sessionID) {
-					ctx.Request.Header.Set("x-bf-session-id", sessionID)
-					strippedURI := "/" + tail
-					if hasQuery {
-						strippedURI += "?" + query
-					}
-					ctx.Request.SetRequestURI(strippedURI)
+			sessionID, tail, found := strings.Cut(strings.TrimPrefix(path, "/s/"), "/")
+			if found && tail != "" && validSessionPathID(sessionID) {
+				ctx.Request.Header.Set("x-bf-session-id", sessionID)
+				strippedURI := "/" + tail
+				if hasQuery {
+					strippedURI += "?" + query
 				}
+				ctx.Request.SetRequestURI(strippedURI)
 			}
 			next(ctx)
 		}

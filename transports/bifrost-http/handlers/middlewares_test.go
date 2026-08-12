@@ -2517,3 +2517,14 @@ func TestSessionPathMiddleware_StripsPrefixAndSetsNativeSessionHeader(t *testing
 		})
 	}
 }
+
+func BenchmarkSessionPathMiddlewareFastPath(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/responses?trace=1")
+	handler := SessionPathMiddleware()(func(*fasthttp.RequestCtx) {})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		handler(ctx)
+	}
+}
