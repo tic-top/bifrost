@@ -509,6 +509,7 @@ type PassthroughConfig struct {
 	Provider         schemas.ModelProvider                                              // which provider's key pool to draw from
 	ProviderDetector func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
 	StripPrefix      []string                                                           // e.g. "/openai" — stripped before forwarding
+	ProviderInPath   bool                                                               // first segment after StripPrefix selects a configured provider
 	UpstreamURL      string                                                             // optional upstream base URL override
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
@@ -3164,6 +3165,19 @@ func extractPassthroughModel(path string, bodyModel string) string {
 	return bodyModel
 }
 
+func parseProviderPassthroughPath(path string, prefix string) (schemas.ModelProvider, string, bool) {
+	remainder := strings.TrimPrefix(path, prefix)
+	if remainder == path {
+		return "", "", false
+	}
+	remainder = strings.TrimPrefix(remainder, "/")
+	parts := strings.SplitN(remainder, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", false
+	}
+	return schemas.ModelProvider(parts[0]), "/" + parts[1], true
+}
+
 func extractModelFromPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
@@ -3268,10 +3282,29 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 
 	path := string(ctx.Path())
-	for _, prefix := range g.passthroughCfg.StripPrefix {
-		if strings.HasPrefix(path, prefix) {
-			path = path[len(prefix):]
-			break
+	provider := cfg.Provider
+	if cfg.ProviderInPath {
+		matched := false
+		for _, prefix := range cfg.StripPrefix {
+			pathProvider, upstreamPath, ok := parseProviderPassthroughPath(path, prefix)
+			if ok {
+				provider = pathProvider
+				path = upstreamPath
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			ctx.Error("invalid provider passthrough path", fasthttp.StatusBadRequest)
+			cancel()
+			return
+		}
+	} else {
+		for _, prefix := range cfg.StripPrefix {
+			if strings.HasPrefix(path, prefix) {
+				path = path[len(prefix):]
+				break
+			}
 		}
 	}
 
@@ -3280,7 +3313,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	contentType := string(ctx.Request.Header.ContentType())
 	bodyModel, bodyStream := parsePassthroughBody(contentType, body)
 	resolvedModel := extractPassthroughModel(path, bodyModel)
-	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, resolvedModel)
 	}

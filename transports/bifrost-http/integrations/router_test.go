@@ -54,6 +54,18 @@ func TestPassthroughSafeHeadersDropsInternalSessionID(t *testing.T) {
 	assert.NotContains(t, got, "authorization", "provider credentials are injected by Bifrost")
 }
 
+func TestParseProviderPassthroughPath(t *testing.T) {
+	provider, upstreamPath, ok := parseProviderPassthroughPath(
+		"/passthrough/genai-openai/v1/responses", "/passthrough",
+	)
+	require.True(t, ok)
+	assert.Equal(t, schemas.ModelProvider("genai-openai"), provider)
+	assert.Equal(t, "/v1/responses", upstreamPath)
+
+	_, _, ok = parseProviderPassthroughPath("/passthrough/genai-openai", "/passthrough")
+	assert.False(t, ok, "an upstream path is required")
+}
+
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
