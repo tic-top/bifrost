@@ -200,8 +200,29 @@ const (
 
 // CohereResponseFormat represents the response format configuration for Cohere chat requests
 type CohereResponseFormat struct {
-	Type       CohereResponseFormatType `json:"type"`             // Required: Response format type
-	JSONSchema *interface{}             `json:"schema,omitempty"` // Optional: JSON schema for structured output (not used when type is "text")
+	Type CohereResponseFormatType `json:"type"` // Required: Response format type
+	// Optional: JSON schema for structured output (not used when type is "text").
+	// Cohere v2 names this field `json_schema` (docs.cohere.com/reference/chat); tagging only
+	// `schema` meant a real Cohere request lost its schema silently and the model answered
+	// with unconstrained - often markdown-fenced - JSON. UnmarshalJSON accepts both spellings.
+	JSONSchema *interface{} `json:"json_schema,omitempty"`
+}
+
+// UnmarshalJSON accepts both `json_schema` (Cohere's spelling) and the legacy `schema` alias.
+func (r *CohereResponseFormat) UnmarshalJSON(data []byte) error {
+	type alias CohereResponseFormat
+	aux := &struct {
+		*alias
+		SchemaAlias *interface{} `json:"schema,omitempty"`
+	}{alias: (*alias)(r)}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if r.JSONSchema == nil && aux.SchemaAlias != nil {
+		r.JSONSchema = aux.SchemaAlias
+	}
+	return nil
 }
 
 // CohereResponseFormatType represents the type of response format
