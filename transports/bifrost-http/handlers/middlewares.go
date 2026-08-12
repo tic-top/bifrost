@@ -30,6 +30,45 @@ import (
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
+// SessionPathMiddleware lets clients that cannot set custom headers carry
+// Bifrost's session ID in the endpoint URL: /s/<session-id>/<normal-path>.
+// It converts that prefix into the native x-bf-session-id header before route
+// matching. The query and request body are untouched.
+func SessionPathMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			rawURI := string(ctx.RequestURI())
+			path, query, hasQuery := strings.Cut(rawURI, "?")
+			if strings.HasPrefix(path, "/s/") {
+				sessionID, tail, found := strings.Cut(strings.TrimPrefix(path, "/s/"), "/")
+				if found && tail != "" && validSessionPathID(sessionID) {
+					ctx.Request.Header.Set("x-bf-session-id", sessionID)
+					strippedURI := "/" + tail
+					if hasQuery {
+						strippedURI += "?" + query
+					}
+					ctx.Request.SetRequestURI(strippedURI)
+				}
+			}
+			next(ctx)
+		}
+	}
+}
+
+func validSessionPathID(sessionID string) bool {
+	if sessionID == "" || len(sessionID) > 255 {
+		return false
+	}
+	for _, char := range sessionID {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("-._~", char) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
 func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {

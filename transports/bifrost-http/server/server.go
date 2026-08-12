@@ -2685,7 +2685,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		Handler: handlers.SecurityHeadersMiddleware()(
+			s.CORSMiddleware.Middleware()(
+				handlers.SessionPathMiddleware()(
+					handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler),
+				),
+			),
+		),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
