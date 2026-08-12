@@ -57,6 +57,8 @@ import (
 	"mime/multipart"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -2737,10 +2739,21 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
+	// Pre-allocate the slot populated by TransportInterceptorMiddleware after
+	// this handler returns. The producer runs post-hooks before trace injection.
+	// Without transport plugins there is no slot publisher and no bounded wait.
+	var completerSlot atomic.Value
+	transportPostHooksActive := false
+	if bifrostCtx != nil {
+		transportPostHooksActive, _ = bifrostCtx.Value(schemas.BifrostContextKeyTransportPostHooksActive).(bool)
+	}
+	if transportPostHooksActive {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	}
+
 	// Get the trace completer function for use in the streaming callback.
 	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
 	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
-	// Router path has no transport post-hook phase, so we always pass nil.
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
@@ -2753,10 +2766,55 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Use SSEStreamReader to bypass fasthttp's internal pipe (fasthttputil.PipeConns)
 	// which batches multiple SSE events into single TCP segments.
 	reader := lib.NewSSEStreamReader()
+	var clientRequestBody []byte
+	clientWireMetadata := schemas.ClientWireMetadata{
+		Method:     string(ctx.Method()),
+		Path:       string(ctx.Path()),
+		RawQuery:   string(ctx.URI().QueryString()),
+		StatusCode: ctx.Response.StatusCode(),
+	}
+	var clientWireRecorder schemas.ClientWireRecorder
+	var shouldStoreClientWire bool
+	if bifrostCtx != nil {
+		clientWireRecorder, _ = bifrostCtx.Value(schemas.BifrostContextKeyClientWireRecorder).(schemas.ClientWireRecorder)
+		shouldStoreClientWire, _ = bifrostCtx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	}
+	if clientWireRecorder != nil && shouldStoreClientWire {
+		clientRequestBody = bytes.Clone(ctx.Request.Body())
+		reader.EnableCapture()
+	}
 	ctx.Response.SetBodyStream(reader, -1)
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
+		var transportLogs []schemas.PluginLogEntry
+		completerRan := false
+		runCompleter := func() {
+			if completerRan || !transportPostHooksActive {
+				return
+			}
+			var loaded any
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for {
+				if loaded = completerSlot.Load(); loaded != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+			if !ok {
+				return
+			}
+			completerRan = true
+			logs, err := postHookCompleter()
+			if err != nil {
+				g.logger.Warn("transport post-hook failed after integration stream terminated: %v", err)
+			}
+			transportLogs = logs
+		}
 		// Create encoder for AWS Event Stream if needed
 		var eventStreamEncoder *eventstream.Encoder
 		if config.Type == RouteConfigTypeBedrock {
@@ -2793,11 +2851,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			}
 			schemas.ReleaseHTTPRequest(httpReq)
+			if clientWireRecorder != nil && shouldStoreClientWire {
+				clientWireRecorder(bifrostCtx, clientWireMetadata, clientRequestBody, reader.CapturedBytes())
+			}
+			runCompleter()
 			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				traceCompleter(transportLogs)
 			}
 		}()
 

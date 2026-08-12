@@ -330,7 +330,9 @@ const (
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
+	BifrostContextKeyTransportPostHooksActive            BifrostContextKey = "bifrost-transport-posthooks-active"              // bool (set by transport middleware when at least one HTTP transport plugin must receive a post-hook)
 	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
+	BifrostContextKeyClientWireRecorder                  BifrostContextKey = "bifrost-client-wire-recorder"                     // ClientWireRecorder (small transport callback; translated streaming bodies remain transport-owned, never stored in context)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostContextKeyParentRequestID                     BifrostContextKey = "bifrost-parent-request-id"                        // string (parent linkage for grouped request logs like realtime turns)
 	BifrostContextKeyRealtimeSessionID                   BifrostContextKey = "bifrost-realtime-session-id"                      // string

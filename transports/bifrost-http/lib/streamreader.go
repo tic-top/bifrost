@@ -33,6 +33,8 @@ type SSEStreamReader struct {
 	// whether the next byte written starts a fresh SSE line. True initially: the start of a
 	// stream is a line boundary.
 	atLineBoundary bool
+	captureEnabled bool
+	captured       []byte
 }
 
 // NewSSEStreamReader creates a new SSEStreamReader with a buffered event channel.
@@ -104,11 +106,30 @@ func (r *SSEStreamReader) sendLocked(event []byte) bool {
 		// A zero-length send writes nothing, so it cannot move the write position.
 		if len(event) > 0 {
 			r.atLineBoundary = event[len(event)-1] == '\n'
+			if r.captureEnabled {
+				r.captured = append(r.captured, event...)
+			}
 		}
 		return true
 	case <-r.closeCh:
 		return false
 	}
+}
+
+// EnableCapture records subsequently enqueued bytes. Capture is opt-in so the
+// normal streaming hot path has no response-sized allocation.
+func (r *SSEStreamReader) EnableCapture() {
+	r.mu.Lock()
+	r.captureEnabled = true
+	r.mu.Unlock()
+}
+
+// CapturedBytes returns a stable copy of all bytes successfully enqueued since
+// capture was enabled.
+func (r *SSEStreamReader) CapturedBytes() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]byte(nil), r.captured...)
 }
 
 // SendEvent sends an SSE-framed event. If eventType is empty, it sends "data: <data>\n\n".
