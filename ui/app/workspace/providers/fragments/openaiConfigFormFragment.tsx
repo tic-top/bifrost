@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
@@ -26,6 +27,8 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		reValidateMode: "onChange",
 		defaultValues: {
 			disable_store: provider.openai_config?.disable_store ?? false,
+			strip_response_input_item_state: provider.openai_config?.strip_response_input_item_state ?? false,
+			upstream_session_header: provider.openai_config?.upstream_session_header ?? "",
 		},
 	});
 
@@ -36,14 +39,18 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 	useEffect(() => {
 		form.reset({
 			disable_store: provider.openai_config?.disable_store ?? false,
+			strip_response_input_item_state: provider.openai_config?.strip_response_input_item_state ?? false,
+			upstream_session_header: provider.openai_config?.upstream_session_header ?? "",
 		});
-	}, [form, provider.name, provider.openai_config?.disable_store]);
+	}, [form, provider.name, provider.openai_config]);
 
 	const onSubmit = (data: OpenAIConfigFormSchema) => {
 		updateProvider(
 			buildProviderUpdatePayload(provider, {
 				openai_config: {
 					disable_store: data.disable_store,
+					strip_response_input_item_state: data.strip_response_input_item_state,
+					upstream_session_header: data.upstream_session_header.trim(),
 				},
 			}),
 		)
@@ -90,6 +97,48 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 										/>
 									</FormControl>
 								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={form.control}
+						name="strip_response_input_item_state"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<FormLabel>Strip Provider Replay State</FormLabel>
+										<p className="text-muted-foreground text-xs">
+											Remove provider-scoped item IDs and encrypted reasoning state when a stateless compatible gateway rejects replay.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-openai-strip-replay-state-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={field.onChange}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={form.control}
+						name="upstream_session_header"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Upstream Session Header</FormLabel>
+								<p className="text-muted-foreground text-xs">
+									Optional provider-owned header populated from Bifrost session identity for sticky routing and prompt-cache locality.
+								</p>
+								<FormControl>
+									<Input placeholder="x-provider-session-id" disabled={!hasUpdateProviderAccess} {...field} />
+								</FormControl>
 								<FormMessage />
 							</FormItem>
 						)}

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -9,6 +10,41 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestPrepareRequestContextMapsConfiguredSessionHeader(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{
+		UpstreamSessionHeader: "x-genai-session-id",
+	}}, passthroughTestLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "run-42-task-7")
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"x-existing": {"keep"},
+	})
+
+	provider.prepareRequestContext(ctx)
+
+	headers, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if got := headers["x-genai-session-id"]; len(got) != 1 || got[0] != "run-42-task-7" {
+		t.Fatalf("upstream session header = %#v", got)
+	}
+	if got := headers["x-existing"]; len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("existing request headers changed: %#v", got)
+	}
+}
+
+func TestPrepareRequestContextRejectsInternalOrCredentialHeaders(t *testing.T) {
+	for _, header := range []string{"x-bf-session-id", "Authorization", "bad header"} {
+		provider := NewOpenAIProvider(&schemas.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{
+			UpstreamSessionHeader: header,
+		}}, passthroughTestLogger{})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "secret-session")
+		provider.prepareRequestContext(ctx)
+		if got := ctx.Value(schemas.BifrostContextKeyExtraHeaders); got != nil {
+			t.Fatalf("unsafe header %q was populated: %#v", header, got)
+		}
+	}
+}
 
 func TestWithoutResponseInputItemStatePreservesConversationEdges(t *testing.T) {
 	originalID := "item-connection-scoped"

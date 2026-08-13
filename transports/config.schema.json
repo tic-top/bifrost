@@ -3909,6 +3909,15 @@
         "disable_store": {
           "type": "boolean",
           "description": "Disable OpenAI Responses API conversation storage."
+        },
+        "strip_response_input_item_state": {
+          "type": "boolean",
+          "description": "Strip provider-scoped Responses item IDs and encrypted reasoning state before replaying input to a stateless compatible gateway."
+        },
+        "upstream_session_header": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional provider-owned header populated from Bifrost's session ID for upstream stickiness and prompt-cache locality. Internal x-bf-* and credential headers are rejected."
         }
       },
       "additionalProperties": false

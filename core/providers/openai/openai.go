@@ -33,6 +33,7 @@ type OpenAIProvider struct {
 	customProviderConfig        *schemas.CustomProviderConfig // Custom provider config
 	disableStore                bool                          // Whether to force store=false on outgoing requests
 	stripResponseInputItemState bool                          // Whether to omit replayed provider-scoped Responses input state
+	upstreamSessionHeader       string                        // Provider header receiving Bifrost's internal session ID
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -78,7 +79,48 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		customProviderConfig:        config.CustomProviderConfig,
 		disableStore:                config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 		stripResponseInputItemState: config.OpenAIConfig != nil && config.OpenAIConfig.StripResponseInputItemState,
+		upstreamSessionHeader:       upstreamSessionHeader(config.OpenAIConfig),
 	}
+}
+
+func upstreamSessionHeader(config *schemas.OpenAIConfig) string {
+	if config == nil {
+		return ""
+	}
+	header := strings.TrimSpace(config.UpstreamSessionHeader)
+	// Bifrost metadata and credentials must never be reflected upstream.  The
+	// configured provider header is an operator-owned capability, not a way for
+	// callers to choose arbitrary forwarding headers.
+	if header == "" || strings.EqualFold(header, "authorization") ||
+		strings.HasPrefix(strings.ToLower(header), "x-bf-") ||
+		strings.ContainsAny(header, "\r\n: \t") {
+		return ""
+	}
+	return header
+}
+
+// prepareRequestContext maps Bifrost's protocol-neutral session identity to a
+// provider-owned header only when that provider explicitly opts in.  This lets
+// gateways use their native sticky routing/prompt cache without teaching every
+// harness a vendor header or leaking x-bf-session-id upstream.
+func (provider *OpenAIProvider) prepareRequestContext(ctx *schemas.BifrostContext) {
+	if ctx == nil || provider.upstreamSessionHeader == "" {
+		return
+	}
+	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+
+	headers := make(map[string][]string)
+	if existing, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for key, values := range existing {
+			headers[key] = append([]string(nil), values...)
+		}
+	}
+	headers[provider.upstreamSessionHeader] = []string{sessionID}
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
 }
 
 // withoutResponseInputItemState clones the request's input slice and removes
@@ -109,6 +151,7 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	provider.prepareRequestContext(ctx)
 	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path

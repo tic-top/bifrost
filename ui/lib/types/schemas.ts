@@ -622,6 +622,8 @@ export const proxyFormConfigSchema = z
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),
+	strip_response_input_item_state: z.boolean(),
+	upstream_session_header: z.string(),
 });
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
@@ -715,6 +717,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Model provider schema
@@ -732,6 +735,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Flexible model provider schema for form data - allows any string for name
