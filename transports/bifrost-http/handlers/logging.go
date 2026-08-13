@@ -534,7 +534,46 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 		pagination.Order = order
 	}
 
-	result, err := h.logManager.GetSessionLogs(ctx, rawSessionID, pagination)
+	var result *logstore.SessionDetailResult
+	var err error
+	if string(ctx.QueryArgs().Peek("metadata")) == "true" {
+		// Gateway capture sessions live in log metadata, not in
+		// parent_request_id (the latter is Bifrost's fallback-chain session).
+		// Hydrate details inside the gateway so an exporter gets the raw/client
+		// wire columns with one HTTP request instead of list + N detail calls.
+		search, searchErr := h.logManager.Search(ctx, &logstore.SearchFilters{
+			MetadataFilters: map[string]string{"session_id": rawSessionID},
+		}, pagination)
+		if searchErr != nil {
+			err = searchErr
+		} else if search == nil {
+			err = errors.New("log search returned no result")
+		} else {
+			logs := make([]logstore.Log, 0, len(search.Logs))
+			for _, summary := range search.Logs {
+				detail, detailErr := h.logManager.GetLog(ctx, summary.ID)
+				if detailErr != nil {
+					err = detailErr
+					break
+				}
+				if detail != nil {
+					logs = append(logs, *detail)
+				}
+			}
+			if err == nil {
+				result = &logstore.SessionDetailResult{
+					SessionID:     rawSessionID,
+					Logs:          logs,
+					Pagination:    search.Pagination,
+					Count:         search.Pagination.TotalCount,
+					ReturnedCount: len(logs),
+					HasMore:       int64(search.Pagination.Offset+len(logs)) < search.Pagination.TotalCount,
+				}
+			}
+		}
+	} else {
+		result, err = h.logManager.GetSessionLogs(ctx, rawSessionID, pagination)
+	}
 	if err != nil {
 		logger.Error("failed to fetch session logs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Session fetch failed: %v", err))

@@ -51,6 +51,73 @@ func TestShouldUseFilterDataCacheRejectsScopedContext(t *testing.T) {
 	}
 }
 
+func TestGetLogSessionByIDMetadataHydratesClientWireRows(t *testing.T) {
+	manager := &dashboardLogManager{
+		searchResult: &logstore.SearchResult{
+			Logs:       []logstore.Log{{ID: "log-1"}},
+			Pagination: logstore.PaginationOptions{Limit: 500, TotalCount: 1},
+		},
+		logs: map[string]*logstore.Log{
+			"log-1": {
+				ID: "log-1", PassthroughRequestBody: `{"input":"hello"}`,
+				PassthroughResponseBody: `{"output":[]}`,
+			},
+		},
+	}
+	handler := &LoggingHandler{
+		logManager:          manager,
+		redactedKeysManager: emptyRedactedKeysManager{},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("session_id", "capture-1")
+	ctx.QueryArgs().Set("metadata", "true")
+
+	handler.getLogSessionByID(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status = %d, body = %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if manager.lastLLMFilters.MetadataFilters["session_id"] != "capture-1" {
+		t.Fatalf("metadata filter = %#v", manager.lastLLMFilters.MetadataFilters)
+	}
+	var response logstore.SessionDetailResult
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Logs) != 1 || response.Logs[0].PassthroughRequestBody == "" {
+		t.Fatalf("raw client-wire row not hydrated: %#v", response.Logs)
+	}
+}
+
+func TestGetLogSessionByIDMetadataRejectsNilSearchResult(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &LoggingHandler{
+		logManager:          &dashboardLogManager{},
+		redactedKeysManager: emptyRedactedKeysManager{},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("session_id", "capture-1")
+	ctx.QueryArgs().Set("metadata", "true")
+
+	handler.getLogSessionByID(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+type emptyRedactedKeysManager struct{}
+
+func (emptyRedactedKeysManager) GetAllRedactedKeys(context.Context, []string) []schemas.Key {
+	return nil
+}
+func (emptyRedactedKeysManager) GetAllRedactedVirtualKeys(context.Context, []string) []tables.TableVirtualKey {
+	return nil
+}
+func (emptyRedactedKeysManager) GetAllRedactedRoutingRules(context.Context, []string) []tables.TableRoutingRule {
+	return nil
+}
+
 // TestGetMCPLogByIDRedactionMapping verifies raw mappings stay hidden and only resolver-approved mappings are returned.
 func TestGetMCPLogByIDRedactionMapping(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -576,13 +643,20 @@ type dashboardLogManager struct {
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
 	lastRecalculateFilters logstore.SearchFilters
 	lastRecalculateContext chan context.Context
+	searchResult           *logstore.SearchResult
+	logs                   map[string]*logstore.Log
 }
 
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
-	return nil, nil
+	if m.logs == nil || m.logs[id] == nil {
+		return nil, nil
+	}
+	entry := *m.logs[id]
+	return &entry, nil
 }
 func (m *dashboardLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
-	return nil, nil
+	m.lastLLMFilters = *filters
+	return m.searchResult, nil
 }
 func (m *dashboardLogManager) GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
 	return nil, nil

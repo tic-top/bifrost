@@ -98,6 +98,31 @@ func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T
 	}
 }
 
+func TestConvertToBifrostContext_TokenTelemetryControl(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		header string
+		want   interface{}
+	}{
+		{name: "true", header: "true", want: true},
+		{name: "false", header: "false", want: false},
+		{name: "invalid is ignored", header: "sometimes", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-token-telemetry", tt.header)
+			converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			if got := converted.Value(schemas.BifrostContextKeyTokenTelemetryRequested); got != tt.want {
+				t.Fatalf("token telemetry context value = %#v, want %#v", got, tt.want)
+			}
+			if extra, _ := converted.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); len(extra["x-bf-token-telemetry"]) != 0 {
+				t.Fatalf("internal token telemetry header forwarded upstream: %#v", extra)
+			}
+		})
+	}
+}
+
 // TestConvertToBifrostContext_StarAllowlistSecurityHeadersBlocked verifies that
 // even with a "*" allowlist (allow all), the hardcoded security denylist in
 // ConvertToBifrostContext still blocks security-sensitive headers.

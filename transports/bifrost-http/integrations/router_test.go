@@ -44,6 +44,7 @@ func TestPassthroughSafeHeadersDropsInternalSessionID(t *testing.T) {
 	header.Set("Content-Type", "application/json")
 	header.Set("X-Client-Trace", "trace-123")
 	header.Set("X-Bf-Session-Id", "genai-session")
+	header.Set("X-Bf-Token-Telemetry", "true")
 	header.Set("Authorization", "Bearer caller-secret")
 
 	got := collectPassthroughSafeHeaders(&header)
@@ -51,6 +52,7 @@ func TestPassthroughSafeHeadersDropsInternalSessionID(t *testing.T) {
 	assert.Equal(t, "application/json", got["content-type"])
 	assert.Equal(t, "trace-123", got["x-client-trace"])
 	assert.NotContains(t, got, "x-bf-session-id", "gateway session metadata must never reach GenAI or another upstream")
+	assert.NotContains(t, got, "x-bf-token-telemetry", "gateway telemetry controls must never reach the provider")
 	assert.NotContains(t, got, "authorization", "provider credentials are injected by Bifrost")
 }
 

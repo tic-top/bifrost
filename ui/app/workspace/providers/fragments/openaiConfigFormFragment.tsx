@@ -28,6 +28,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		defaultValues: {
 			disable_store: provider.openai_config?.disable_store ?? false,
 			strip_response_input_item_state: provider.openai_config?.strip_response_input_item_state ?? false,
+			allow_token_telemetry: provider.openai_config?.allow_token_telemetry ?? false,
 			upstream_session_header: provider.openai_config?.upstream_session_header ?? "",
 		},
 	});
@@ -40,6 +41,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		form.reset({
 			disable_store: provider.openai_config?.disable_store ?? false,
 			strip_response_input_item_state: provider.openai_config?.strip_response_input_item_state ?? false,
+			allow_token_telemetry: provider.openai_config?.allow_token_telemetry ?? false,
 			upstream_session_header: provider.openai_config?.upstream_session_header ?? "",
 		});
 	}, [form, provider.name, provider.openai_config]);
@@ -50,6 +52,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 				openai_config: {
 					disable_store: data.disable_store,
 					strip_response_input_item_state: data.strip_response_input_item_state,
+					allow_token_telemetry: data.allow_token_telemetry,
 					upstream_session_header: data.upstream_session_header.trim(),
 				},
 			}),
@@ -116,6 +119,32 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 									<FormControl>
 										<Switch
 											data-testid="provider-openai-strip-replay-state-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={field.onChange}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={form.control}
+						name="allow_token_telemetry"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<FormLabel>Allow Token Telemetry</FormLabel>
+										<p className="text-muted-foreground text-xs">
+											Permit explicit OpenAI Chat passthrough requests to collect sampled token IDs and log probabilities from a compatible self-hosted endpoint.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-openai-token-telemetry-switch"
 											size="md"
 											checked={field.value}
 											disabled={!hasUpdateProviderAccess}

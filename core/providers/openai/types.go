@@ -122,7 +122,8 @@ type OpenAIChatRequest struct {
 	Messages []OpenAIMessage `json:"messages"`
 
 	schemas.ChatParameters
-	Stream *bool `json:"stream,omitempty"`
+	Stream         *bool `json:"stream,omitempty"`
+	ReturnTokenIDs *bool `json:"return_token_ids,omitempty"` // vLLM token telemetry extension; set only by explicit opt-in
 
 	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
 	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`

@@ -3914,6 +3914,10 @@
           "type": "boolean",
           "description": "Strip provider-scoped Responses item IDs and encrypted reasoning state before replaying input to a stateless compatible gateway."
         },
+        "allow_token_telemetry": {
+          "type": "boolean",
+          "description": "Allow requests carrying x-bf-token-telemetry: true to add logprobs and return_token_ids on OpenAI Chat passthrough. Disabled by default."
+        },
         "upstream_session_header": {
           "type": "string",
           "minLength": 1,

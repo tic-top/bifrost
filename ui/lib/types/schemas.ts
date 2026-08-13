@@ -623,6 +623,7 @@ export const proxyFormConfigSchema = z
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),
 	strip_response_input_item_state: z.boolean(),
+	allow_token_telemetry: z.boolean(),
 	upstream_session_header: z.string(),
 });
 

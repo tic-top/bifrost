@@ -33,7 +33,9 @@ var realtimeTransportPaths = buildRealtimeTransportPathSet()
 // SessionPathMiddleware lets clients that cannot set custom headers carry
 // Bifrost's session ID in the endpoint URL: /s/<session-id>/<normal-path>.
 // It converts that prefix into the native x-bf-session-id header before route
-// matching. The query and request body are untouched.
+// matching. An optional /t/ segment requests token telemetry for clients that
+// cannot set custom headers: /s/<session-id>/t/<normal-path>. Provider config
+// still has to allow telemetry. The query and request body are untouched.
 func SessionPathMiddleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -46,6 +48,10 @@ func SessionPathMiddleware() schemas.BifrostHTTPMiddleware {
 			sessionID, tail, found := strings.Cut(strings.TrimPrefix(path, "/s/"), "/")
 			if found && tail != "" && validSessionPathID(sessionID) {
 				ctx.Request.Header.Set("x-bf-session-id", sessionID)
+				if telemetryTail, telemetry := strings.CutPrefix(tail, "t/"); telemetry && telemetryTail != "" {
+					ctx.Request.Header.Set("x-bf-token-telemetry", "true")
+					tail = telemetryTail
+				}
 				strippedURI := "/" + tail
 				if hasQuery {
 					strippedURI += "?" + query

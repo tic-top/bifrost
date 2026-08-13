@@ -2468,16 +2468,24 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 
 func TestSessionPathMiddleware_StripsPrefixAndSetsNativeSessionHeader(t *testing.T) {
 	tests := []struct {
-		name        string
-		requestURI  string
-		wantURI     string
-		wantSession string
+		name          string
+		requestURI    string
+		wantURI       string
+		wantSession   string
+		wantTelemetry string
 	}{
 		{
 			name:        "OpenAI Responses",
 			requestURI:  "/s/sess-000123/openai_passthrough/v1/responses?foo=bar",
 			wantURI:     "/openai_passthrough/v1/responses?foo=bar",
 			wantSession: "sess-000123",
+		},
+		{
+			name:          "OpenAI Chat token telemetry",
+			requestURI:    "/s/rollout-42/t/openai_passthrough/v1/chat/completions?trace=1",
+			wantURI:       "/openai_passthrough/v1/chat/completions?trace=1",
+			wantSession:   "rollout-42",
+			wantTelemetry: "true",
 		},
 		{
 			name:        "native GenAI streaming",
@@ -2509,6 +2517,9 @@ func TestSessionPathMiddleware_StripsPrefixAndSetsNativeSessionHeader(t *testing
 				}
 				if got := string(ctx.Request.Header.Peek("x-bf-session-id")); got != tc.wantSession {
 					t.Errorf("session header = %q, want %q", got, tc.wantSession)
+				}
+				if got := string(ctx.Request.Header.Peek("x-bf-token-telemetry")); got != tc.wantTelemetry {
+					t.Errorf("token telemetry header = %q, want %q", got, tc.wantTelemetry)
 				}
 			})(ctx)
 			if !called {

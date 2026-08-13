@@ -1009,6 +1009,13 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 			return accumulator.ResponsesStreamChunks[i].ChunkIndex < accumulator.ResponsesStreamChunks[j].ChunkIndex
 		})
 		var rawBuilder strings.Builder
+		rawBytes := 0
+		for _, chunk := range accumulator.ResponsesStreamChunks {
+			if chunk.RawResponse != nil {
+				rawBytes += len(*chunk.RawResponse) + 2
+			}
+		}
+		rawBuilder.Grow(rawBytes)
 		for _, chunk := range accumulator.ResponsesStreamChunks {
 			if chunk.RawResponse != nil {
 				if rawBuilder.Len() > 0 {
