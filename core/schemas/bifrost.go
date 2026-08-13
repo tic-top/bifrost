@@ -327,10 +327,13 @@ const (
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyHTTPRoute                           BifrostContextKey = "bifrost-http-route"                               // string (set by bifrost - DO NOT SET THIS MANUALLY — matched route template, set by HTTP transport; used as the low-cardinality metrics `path` label)
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
+	BifrostContextKeyTokenTelemetryRequested             BifrostContextKey = "bifrost-token-telemetry-requested"                // bool (set by HTTP transport from x-bf-token-telemetry; provider config must also allow it)
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
+	BifrostContextKeyTransportPostHooksActive            BifrostContextKey = "bifrost-transport-posthooks-active"               // bool (set by transport middleware when at least one HTTP transport plugin must receive a post-hook)
 	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
+	BifrostContextKeyClientWireRecorder                  BifrostContextKey = "bifrost-client-wire-recorder"                     // ClientWireRecorder (small transport callback; translated streaming bodies remain transport-owned, never stored in context)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostContextKeyParentRequestID                     BifrostContextKey = "bifrost-parent-request-id"                        // string (parent linkage for grouped request logs like realtime turns)
 	BifrostContextKeyRealtimeSessionID                   BifrostContextKey = "bifrost-realtime-session-id"                      // string
@@ -1713,13 +1716,13 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed string     `json:"resolved_model_used,omitempty"`
-	Latency           int64      `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency           *int64                 `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
@@ -1733,8 +1736,8 @@ type BifrostResponseExtraFields struct {
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string     `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string                `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {

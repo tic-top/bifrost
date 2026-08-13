@@ -48,6 +48,16 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// NewProviderPassthroughRouter creates a provider-addressed passthrough route.
+// /passthrough/{provider}/... selects that configured provider and forwards the
+// remaining provider-native path without rewriting the request body.
+func NewProviderPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		StripPrefix:    []string{"/passthrough"},
+		ProviderInPath: true,
+	})
+}
+
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
 // Restricted to the Codex responses endpoint only — this is not a general-purpose
 // ChatGPT backend proxy.

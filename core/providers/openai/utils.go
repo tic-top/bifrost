@@ -161,6 +161,22 @@ func isOpenAIReasoningModel(model string) bool {
 	return false
 }
 
+// supportsOpenAIResponsesReasoningReplay reports models on an OpenAI-compatible
+// Responses endpoint that produce encrypted reasoning items for stateless
+// multi-turn replay. This is deliberately broader than
+// isOpenAIReasoningModel: the latter also gates OpenAI-specific parameter rules
+// such as top_p stripping, which must not be applied to Meta Muse.
+func supportsOpenAIResponsesReasoningReplay(model string) bool {
+	if isOpenAIReasoningModel(model) {
+		return true
+	}
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	return strings.HasPrefix(strings.ToLower(model), "muse-spark-")
+}
+
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	switch effort {
 	case "minimal":

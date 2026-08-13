@@ -2465,3 +2465,77 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 		t.Error("expected access log to include a non-empty trace_id")
 	}
 }
+
+func TestSessionPathMiddleware_StripsPrefixAndSetsNativeSessionHeader(t *testing.T) {
+	tests := []struct {
+		name          string
+		requestURI    string
+		wantURI       string
+		wantSession   string
+		wantTelemetry string
+	}{
+		{
+			name:        "OpenAI Responses",
+			requestURI:  "/s/sess-000123/openai_passthrough/v1/responses?foo=bar",
+			wantURI:     "/openai_passthrough/v1/responses?foo=bar",
+			wantSession: "sess-000123",
+		},
+		{
+			name:          "OpenAI Chat token telemetry",
+			requestURI:    "/s/rollout-42/t/openai_passthrough/v1/chat/completions?trace=1",
+			wantURI:       "/openai_passthrough/v1/chat/completions?trace=1",
+			wantSession:   "rollout-42",
+			wantTelemetry: "true",
+		},
+		{
+			name:        "native GenAI streaming",
+			requestURI:  "/s/gemini-run/genai_passthrough/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+			wantURI:     "/genai_passthrough/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse",
+			wantSession: "gemini-run",
+		},
+		{
+			name:       "malformed empty session",
+			requestURI: "/s//openai_passthrough/v1/responses",
+			wantURI:    "/s//openai_passthrough/v1/responses",
+		},
+		{
+			name:       "ordinary route",
+			requestURI: "/health",
+			wantURI:    "/health",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.requestURI)
+			called := false
+			SessionPathMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				called = true
+				if got := string(ctx.RequestURI()); got != tc.wantURI {
+					t.Errorf("request URI = %q, want %q", got, tc.wantURI)
+				}
+				if got := string(ctx.Request.Header.Peek("x-bf-session-id")); got != tc.wantSession {
+					t.Errorf("session header = %q, want %q", got, tc.wantSession)
+				}
+				if got := string(ctx.Request.Header.Peek("x-bf-token-telemetry")); got != tc.wantTelemetry {
+					t.Errorf("token telemetry header = %q, want %q", got, tc.wantTelemetry)
+				}
+			})(ctx)
+			if !called {
+				t.Fatal("next handler was not called")
+			}
+		})
+	}
+}
+
+func BenchmarkSessionPathMiddlewareFastPath(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/responses?trace=1")
+	handler := SessionPathMiddleware()(func(*fasthttp.RequestCtx) {})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		handler(ctx)
+	}
+}

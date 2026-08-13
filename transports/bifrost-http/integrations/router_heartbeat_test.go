@@ -59,6 +59,26 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 	})
 }
 
+func Test_handleStreamingGenAIOmitsHeartbeatComments(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+		ctx := &fasthttp.RequestCtx{}
+		router.handleStreaming(ctx, nil, RouteConfig{Type: RouteConfigTypeGenAI}, stream, func() {})
+
+		bodyStream := ctx.Response.BodyStream()
+		readDone := make(chan string, 1)
+		go func() {
+			b, _ := io.ReadAll(bodyStream)
+			readDone <- string(b)
+		}()
+
+		time.Sleep(2*lib.DefaultSSEHeartbeatInterval + time.Millisecond)
+		close(stream)
+		assert.NotContains(t, <-readDone, ": heartbeat", "Google GenAI SDK rejects SSE comments left in its final parse buffer")
+	})
+}
+
 // Test_passthroughHeartbeatEligible pins down the content-type gate handlePassthroughStream
 // uses to decide whether the heartbeat is safe to inject: only when the resolved
 // content-type is actually SSE. Injecting anything into a non-SSE passthrough body (e.g.

@@ -22,6 +22,11 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `azure`
 - `/genai_passthrough`
   Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
+- `/passthrough/{provider}`
+  Provider-addressed passthrough for custom or built-in providers. The provider
+  segment is removed before forwarding, so the upstream receives its original
+  path and body unchanged. This is useful when one Bifrost process fronts
+  multiple OpenAI-compatible endpoints with different base URLs.
 
 ---
 
@@ -48,6 +53,14 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
 ### OpenAI Passthrough
 
 - Uses `openai` as the default provider.
+
+### Provider-Addressed Passthrough
+
+- Uses the configured provider named in the URL. For example,
+  `/passthrough/local-vllm/v1/chat/completions` selects `local-vllm` and sends
+  `/v1/chat/completions` upstream.
+- The request body is not rewritten, so the model remains the provider-native
+  model ID rather than requiring a routing prefix.
 
 ### Anthropic Passthrough
 

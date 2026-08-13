@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -693,6 +694,8 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
+	"/muse-code/models":          schemas.ListModelsRequest,
+	"/v1/muse-code/models":       schemas.ListModelsRequest,
 }
 
 // createRequestTypeMiddleware creates a middleware that sets the request type for a specific route
@@ -723,6 +726,8 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
+	r.GET("/muse-code/models", lib.ChainMiddlewares(h.museModels, baseMiddlewares...))
+	r.GET("/v1/muse-code/models", lib.ChainMiddlewares(h.museModels, baseMiddlewares...))
 
 	// Completion endpoints (non-parameterized)
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
@@ -817,6 +822,19 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 // listModels handles GET /v1/models - Process list models requests
 // If provider is not specified, lists all models from all configured providers
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
+	h.listModelsWithProjection(ctx, nil)
+}
+
+// museModels serves Muse Code's vendor-specific startup catalog. Inference
+// remains on the ordinary Responses route; this only projects Bifrost's model
+// list into the small shape Muse expects before its first model request.
+func (h *CompletionHandler) museModels(ctx *fasthttp.RequestCtx) {
+	h.listModelsWithProjection(ctx, func(resp *schemas.BifrostListModelsResponse) interface{} {
+		return projectMuseCatalog(resp)
+	})
+}
+
+func (h *CompletionHandler) listModelsWithProjection(ctx *fasthttp.RequestCtx, project func(*schemas.BifrostListModelsResponse) interface{}) {
 	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
@@ -873,7 +891,10 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+	// Large-response streaming serializes Bifrost's native schema directly. A
+	// compatibility projection must be materialized first, and model catalogs
+	// are intentionally small startup responses rather than inference streams.
+	if project == nil && streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
 
@@ -881,7 +902,11 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
-	// Send successful response
+	// Send successful response, optionally projected for a vendor integration.
+	if project != nil {
+		SendJSON(ctx, project(resp))
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1935,7 +1960,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
 	// access after the handler returns (fasthttp recycles RequestCtx).
 	var completerSlot atomic.Value
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	transportPostHooksActive, _ := bifrostCtx.Value(schemas.BifrostContextKeyTransportPostHooksActive).(bool)
+	if transportPostHooksActive {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	}
 
 	// Get the trace completer function for use in the streaming callback.
 	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
@@ -1952,6 +1980,19 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// which batches multiple SSE events into single TCP segments.
 	// Each event is delivered individually via a channel, ensuring one HTTP chunk per event.
 	reader := lib.NewSSEStreamReader()
+	var clientRequestBody []byte
+	clientWireMetadata := schemas.ClientWireMetadata{
+		Method:     string(ctx.Method()),
+		Path:       string(ctx.Path()),
+		RawQuery:   string(ctx.URI().QueryString()),
+		StatusCode: ctx.Response.StatusCode(),
+	}
+	clientWireRecorder, _ := bifrostCtx.Value(schemas.BifrostContextKeyClientWireRecorder).(schemas.ClientWireRecorder)
+	shouldStoreClientWire, _ := bifrostCtx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	if clientWireRecorder != nil && shouldStoreClientWire {
+		clientRequestBody = bytes.Clone(ctx.Request.Body())
+		reader.EnableCapture()
+	}
 	ctx.Response.SetBodyStream(reader, -1)
 
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
@@ -1963,7 +2004,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// client sees them (happy path, before [DONE]); =false logs server-side only
 		// (early-return / defer fallback, after stream termination).
 		runCompleter := func(sendSSEOnError bool) {
-			if completerRan {
+			if completerRan || !transportPostHooksActive {
 				return
 			}
 			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
@@ -2021,6 +2062,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
 			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
+			if clientWireRecorder != nil && shouldStoreClientWire {
+				clientWireRecorder(bifrostCtx, clientWireMetadata, clientRequestBody, reader.CapturedBytes())
+			}
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -9,6 +10,79 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestPrepareRequestContextMapsConfiguredSessionHeader(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{
+		UpstreamSessionHeader: "x-genai-session-id",
+	}}, passthroughTestLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "run-42-task-7")
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"x-existing": {"keep"},
+	})
+
+	provider.prepareRequestContext(ctx)
+
+	headers, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if got := headers["x-genai-session-id"]; len(got) != 1 || got[0] != "run-42-task-7" {
+		t.Fatalf("upstream session header = %#v", got)
+	}
+	if got := headers["x-existing"]; len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("existing request headers changed: %#v", got)
+	}
+}
+
+func TestPrepareRequestContextRejectsInternalOrCredentialHeaders(t *testing.T) {
+	for _, header := range []string{"x-bf-session-id", "Authorization", "bad header"} {
+		provider := NewOpenAIProvider(&schemas.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{
+			UpstreamSessionHeader: header,
+		}}, passthroughTestLogger{})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "secret-session")
+		provider.prepareRequestContext(ctx)
+		if got := ctx.Value(schemas.BifrostContextKeyExtraHeaders); got != nil {
+			t.Fatalf("unsafe header %q was populated: %#v", header, got)
+		}
+	}
+}
+
+func TestWithoutResponseInputItemStatePreservesConversationEdges(t *testing.T) {
+	originalID := "item-connection-scoped"
+	callID := "call-stable"
+	encryptedContent := "provider-connection-scoped"
+	req := &schemas.BifrostResponsesRequest{
+		Input: []schemas.ResponsesMessage{{
+			ID: &originalID,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &callID,
+			},
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				EncryptedContent: &encryptedContent,
+			},
+		}},
+	}
+
+	converted := withoutResponseInputItemState(req)
+
+	if converted == req {
+		t.Fatal("expected a cloned request")
+	}
+	if converted.Input[0].ID != nil {
+		t.Fatalf("replayed item ID was not stripped: %q", *converted.Input[0].ID)
+	}
+	if converted.Input[0].CallID == nil || *converted.Input[0].CallID != callID {
+		t.Fatal("tool call_id conversation edge was changed")
+	}
+	if converted.Input[0].ResponsesReasoning.EncryptedContent != nil {
+		t.Fatal("replayed encrypted reasoning state was not stripped")
+	}
+	if req.Input[0].ID == nil || *req.Input[0].ID != originalID {
+		t.Fatal("original request was mutated")
+	}
+	if req.Input[0].ResponsesReasoning.EncryptedContent == nil || *req.Input[0].ResponsesReasoning.EncryptedContent != encryptedContent {
+		t.Fatal("original reasoning state was mutated")
+	}
+}
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
@@ -108,6 +182,20 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			expectedIncluded:         true,
 			expectedEncryptedContent: schemas.Ptr("encrypted"),
 			description:              "Reasoning models (o1/o3) produce encrypted content; should be preserved for multi-turn",
+		},
+		{
+			name:  "Muse encrypted reasoning is preserved for replay",
+			model: "muse-spark-1.2-contributor",
+			message: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{},
+					EncryptedContent: schemas.Ptr("muse-encrypted"),
+				},
+			},
+			expectedIncluded:         true,
+			expectedEncryptedContent: schemas.Ptr("muse-encrypted"),
+			description:              "Meta Muse uses OpenAI Responses encrypted_content for stateless multi-turn reasoning replay",
 		},
 		{
 			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",
@@ -323,6 +411,12 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			model:    "gpt-5.4",
 			effort:   "xhigh",
 			expected: "xhigh",
+		},
+		{
+			name:     "preserves medium for Meta Muse",
+			model:    "muse-spark-1.2-contributor",
+			effort:   "medium",
+			expected: "medium",
 		},
 		{
 			name:     "preserves xhigh for gpt-5.2",

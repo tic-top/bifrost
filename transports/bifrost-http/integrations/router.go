@@ -57,6 +57,8 @@ import (
 	"mime/multipart"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -509,6 +511,7 @@ type PassthroughConfig struct {
 	Provider         schemas.ModelProvider                                              // which provider's key pool to draw from
 	ProviderDetector func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
 	StripPrefix      []string                                                           // e.g. "/openai" — stripped before forwarding
+	ProviderInPath   bool                                                               // first segment after StripPrefix selects a configured provider
 	UpstreamURL      string                                                             // optional upstream base URL override
 	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
 	// these method+path pairs instead of forwarding every request under StripPrefix.
@@ -2736,10 +2739,21 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
+	// Pre-allocate the slot populated by TransportInterceptorMiddleware after
+	// this handler returns. The producer runs post-hooks before trace injection.
+	// Without transport plugins there is no slot publisher and no bounded wait.
+	var completerSlot atomic.Value
+	transportPostHooksActive := false
+	if bifrostCtx != nil {
+		transportPostHooksActive, _ = bifrostCtx.Value(schemas.BifrostContextKeyTransportPostHooksActive).(bool)
+	}
+	if transportPostHooksActive {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	}
+
 	// Get the trace completer function for use in the streaming callback.
 	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
 	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
-	// Router path has no transport post-hook phase, so we always pass nil.
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
@@ -2752,10 +2766,55 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Use SSEStreamReader to bypass fasthttp's internal pipe (fasthttputil.PipeConns)
 	// which batches multiple SSE events into single TCP segments.
 	reader := lib.NewSSEStreamReader()
+	var clientRequestBody []byte
+	clientWireMetadata := schemas.ClientWireMetadata{
+		Method:     string(ctx.Method()),
+		Path:       string(ctx.Path()),
+		RawQuery:   string(ctx.URI().QueryString()),
+		StatusCode: ctx.Response.StatusCode(),
+	}
+	var clientWireRecorder schemas.ClientWireRecorder
+	var shouldStoreClientWire bool
+	if bifrostCtx != nil {
+		clientWireRecorder, _ = bifrostCtx.Value(schemas.BifrostContextKeyClientWireRecorder).(schemas.ClientWireRecorder)
+		shouldStoreClientWire, _ = bifrostCtx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	}
+	if clientWireRecorder != nil && shouldStoreClientWire {
+		clientRequestBody = bytes.Clone(ctx.Request.Body())
+		reader.EnableCapture()
+	}
 	ctx.Response.SetBodyStream(reader, -1)
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
+		var transportLogs []schemas.PluginLogEntry
+		completerRan := false
+		runCompleter := func() {
+			if completerRan || !transportPostHooksActive {
+				return
+			}
+			var loaded any
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for {
+				if loaded = completerSlot.Load(); loaded != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+			if !ok {
+				return
+			}
+			completerRan = true
+			logs, err := postHookCompleter()
+			if err != nil {
+				g.logger.Warn("transport post-hook failed after integration stream terminated: %v", err)
+			}
+			transportLogs = logs
+		}
 		// Create encoder for AWS Event Stream if needed
 		var eventStreamEncoder *eventstream.Encoder
 		if config.Type == RouteConfigTypeBedrock {
@@ -2773,9 +2832,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		// AWS SDKs (e.g. Go SDK v2) don't silently drop an unmodeled `:event-type` -- they
 		// surface it to the caller as a typed union member (types.UnknownUnionMember). So
 		// Bedrock streams stay on purely reactive (write-failure-based) disconnect detection.
+		// GenAI also cannot receive comment frames: the official Google GenAI SDK's
+		// streaming parser only consumes `data:` records and retains SSE comments in
+		// its buffer, then raises "Incomplete JSON segment at the end" at EOF.  This
+		// is observable in Gemini CLI, so native GenAI compatibility takes priority
+		// over proactive idle disconnect detection on that route.
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
-		if config.Type != RouteConfigTypeBedrock {
+		if config.Type != RouteConfigTypeBedrock && config.Type != RouteConfigTypeGenAI {
 			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 		}
 
@@ -2787,11 +2851,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			}
 			schemas.ReleaseHTTPRequest(httpReq)
+			if clientWireRecorder != nil && shouldStoreClientWire {
+				clientWireRecorder(bifrostCtx, clientWireMetadata, clientRequestBody, reader.CapturedBytes())
+			}
+			runCompleter()
 			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter(nil)
+				traceCompleter(transportLogs)
 			}
 		}()
 
@@ -3164,6 +3232,19 @@ func extractPassthroughModel(path string, bodyModel string) string {
 	return bodyModel
 }
 
+func parseProviderPassthroughPath(path string, prefix string) (schemas.ModelProvider, string, bool) {
+	remainder := strings.TrimPrefix(path, prefix)
+	if remainder == path {
+		return "", "", false
+	}
+	remainder = strings.TrimPrefix(remainder, "/")
+	parts := strings.SplitN(remainder, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", false
+	}
+	return schemas.ModelProvider(parts[0]), "/" + parts[1], true
+}
+
 func extractModelFromPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
@@ -3242,11 +3323,9 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 	return
 }
 
-func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
-	cfg := g.passthroughCfg
-
+func collectPassthroughSafeHeaders(header *fasthttp.RequestHeader) map[string]string {
 	safeHeaders := make(map[string]string)
-	ctx.Request.Header.All()(func(key, value []byte) bool {
+	header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		switch keyStr {
 		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
@@ -3259,14 +3338,40 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		}
 		return true
 	})
+	return safeHeaders
+}
+
+func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
+	cfg := g.passthroughCfg
+
+	safeHeaders := collectPassthroughSafeHeaders(&ctx.Request.Header)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 
 	path := string(ctx.Path())
-	for _, prefix := range g.passthroughCfg.StripPrefix {
-		if strings.HasPrefix(path, prefix) {
-			path = path[len(prefix):]
-			break
+	provider := cfg.Provider
+	if cfg.ProviderInPath {
+		matched := false
+		for _, prefix := range cfg.StripPrefix {
+			pathProvider, upstreamPath, ok := parseProviderPassthroughPath(path, prefix)
+			if ok {
+				provider = pathProvider
+				path = upstreamPath
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			ctx.Error("invalid provider passthrough path", fasthttp.StatusBadRequest)
+			cancel()
+			return
+		}
+	} else {
+		for _, prefix := range cfg.StripPrefix {
+			if strings.HasPrefix(path, prefix) {
+				path = path[len(prefix):]
+				break
+			}
 		}
 	}
 
@@ -3275,7 +3380,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	contentType := string(ctx.Request.Header.ContentType())
 	bodyModel, bodyStream := parsePassthroughBody(contentType, body)
 	resolvedModel := extractPassthroughModel(path, bodyModel)
-	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, resolvedModel)
 	}

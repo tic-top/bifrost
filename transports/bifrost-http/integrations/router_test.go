@@ -39,6 +39,35 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	assert.True(t, stream)
 }
 
+func TestPassthroughSafeHeadersDropsInternalSessionID(t *testing.T) {
+	var header fasthttp.RequestHeader
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Client-Trace", "trace-123")
+	header.Set("X-Bf-Session-Id", "genai-session")
+	header.Set("X-Bf-Token-Telemetry", "true")
+	header.Set("Authorization", "Bearer caller-secret")
+
+	got := collectPassthroughSafeHeaders(&header)
+
+	assert.Equal(t, "application/json", got["content-type"])
+	assert.Equal(t, "trace-123", got["x-client-trace"])
+	assert.NotContains(t, got, "x-bf-session-id", "gateway session metadata must never reach GenAI or another upstream")
+	assert.NotContains(t, got, "x-bf-token-telemetry", "gateway telemetry controls must never reach the provider")
+	assert.NotContains(t, got, "authorization", "provider credentials are injected by Bifrost")
+}
+
+func TestParseProviderPassthroughPath(t *testing.T) {
+	provider, upstreamPath, ok := parseProviderPassthroughPath(
+		"/passthrough/genai-openai/v1/responses", "/passthrough",
+	)
+	require.True(t, ok)
+	assert.Equal(t, schemas.ModelProvider("genai-openai"), provider)
+	assert.Equal(t, "/v1/responses", upstreamPath)
+
+	_, _, ok = parseProviderPassthroughPath("/passthrough/genai-openai", "/passthrough")
+	assert.False(t, ok, "an upstream path is required")
+}
+
 func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})

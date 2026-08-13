@@ -772,14 +772,76 @@ func (p *LoggerPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportPreHook is not used for this plugin
+// HTTPTransportPreHook installs a small callback that translated integrations
+// can invoke after producing their client-facing response. The response bytes
+// remain transport-owned; only the final strings are attached to the pending
+// log entry when raw storage is enabled.
 func (p *LoggerPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	ctx.SetValue(schemas.BifrostContextKeyClientWireRecorder, schemas.ClientWireRecorder(func(recordingCtx *schemas.BifrostContext, metadata schemas.ClientWireMetadata, requestBody, responseBody []byte) {
+		p.recordClientWire(recordingCtx, metadata, requestBody, responseBody)
+	}))
 	return nil, nil
 }
 
-// HTTPTransportPostHook is not used for this plugin
+// HTTPTransportPostHook records unary translated responses. Streaming routers
+// invoke the same recorder themselves once their body stream is complete.
 func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	recorder, _ := ctx.Value(schemas.BifrostContextKeyClientWireRecorder).(schemas.ClientWireRecorder)
+	if recorder != nil && req != nil && resp != nil {
+		recorder(ctx, schemas.ClientWireMetadata{
+			Method:     req.Method,
+			Path:       req.Path,
+			StatusCode: resp.StatusCode,
+		}, req.Body, resp.Body)
+	}
 	return nil
+}
+
+func (p *LoggerPlugin) recordClientWire(ctx *schemas.BifrostContext, metadata schemas.ClientWireMetadata, requestBody, responseBody []byte) {
+	if ctx == nil || (len(requestBody) == 0 && len(responseBody) == 0) {
+		return
+	}
+	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+	if !shouldStoreRaw || !p.contentLoggingEnabled(ctx) {
+		return
+	}
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" {
+		return
+	}
+	pendingValue, ok := p.pendingLogsToInject.Load(traceID)
+	if !ok {
+		return
+	}
+	pending, ok := pendingValue.(*pendingInjectEntries)
+	if !ok {
+		return
+	}
+	pending.mu.Lock()
+	defer pending.mu.Unlock()
+	if len(pending.entries) == 0 {
+		return
+	}
+	// A top-level client response corresponds to the final attempt. Attaching
+	// it only there avoids exporting duplicate client turns for fallbacks.
+	entry := pending.entries[len(pending.entries)-1]
+	if len(requestBody) > 0 {
+		entry.PassthroughRequestBody = string(requestBody)
+	}
+	if len(responseBody) > 0 {
+		entry.PassthroughResponseBody = string(responseBody)
+	}
+	params := make(map[string]interface{})
+	if entry.ParamsParsed != nil {
+		if rawParams, err := sonic.Marshal(entry.ParamsParsed); err == nil {
+			_ = sonic.Unmarshal(rawParams, &params)
+		}
+	}
+	params["method"] = metadata.Method
+	params["path"] = metadata.Path
+	params["raw_query"] = metadata.RawQuery
+	params["status_code"] = metadata.StatusCode
+	entry.ParamsParsed = params
 }
 
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged

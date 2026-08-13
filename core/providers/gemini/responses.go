@@ -2625,33 +2625,44 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 		return nil
 	}
 
-	toolChoice := &schemas.ResponsesToolChoiceStruct{
-		Type: schemas.ResponsesToolChoiceTypeFunction,
-	}
-
-	switch toolConfig.FunctionCallingConfig.Mode {
-	case FunctionCallingConfigModeAuto:
-		toolChoice.Mode = schemas.Ptr("auto")
+	cfg := toolConfig.FunctionCallingConfig
+	mode := "auto"
+	switch cfg.Mode {
 	case FunctionCallingConfigModeAny:
-		toolChoice.Mode = schemas.Ptr("required")
+		mode = "required"
 	case FunctionCallingConfigModeNone:
-		toolChoice.Mode = schemas.Ptr("none")
-	default:
-		toolChoice.Mode = schemas.Ptr("auto")
+		mode = "none"
 	}
 
-	if toolConfig.FunctionCallingConfig.AllowedFunctionNames != nil {
-		for _, functionName := range toolConfig.FunctionCallingConfig.AllowedFunctionNames {
-			toolChoice.Tools = append(toolChoice.Tools, schemas.ResponsesToolChoiceAllowedToolDef{
-				Type: string(schemas.ResponsesToolTypeFunction),
-				Name: schemas.Ptr(functionName),
-			})
-		}
+	// OpenAI Responses represents the ordinary modes as strings.  A struct with
+	// type:function plus mode/tools is not a valid Responses tool_choice (and is
+	// rejected by vLLM's OpenAI-compatible endpoint).  Keep the compact string
+	// form whenever Gemini did not restrict the callable function set.
+	if len(cfg.AllowedFunctionNames) == 0 || mode == "none" {
+		return &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(mode)}
 	}
 
-	return &schemas.ResponsesToolChoice{
-		ResponsesToolChoiceStruct: toolChoice,
+	// A single required function has a widely-supported native Responses shape.
+	// For AUTO, or for more than one allowed function, use allowed_tools so the
+	// Gemini allow-list and whether a call is mandatory both survive conversion.
+	if mode == "required" && len(cfg.AllowedFunctionNames) == 1 {
+		return &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type: schemas.ResponsesToolChoiceTypeFunction,
+			Name: schemas.Ptr(cfg.AllowedFunctionNames[0]),
+		}}
 	}
+
+	toolChoice := &schemas.ResponsesToolChoiceStruct{
+		Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+		Mode: schemas.Ptr(mode),
+	}
+	for _, functionName := range cfg.AllowedFunctionNames {
+		toolChoice.Tools = append(toolChoice.Tools, schemas.ResponsesToolChoiceAllowedToolDef{
+			Type: string(schemas.ResponsesToolTypeFunction),
+			Name: schemas.Ptr(functionName),
+		})
+	}
+	return &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: toolChoice}
 }
 
 // textBlockOf returns the text content block of messages[idx], or nil when idx is

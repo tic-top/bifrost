@@ -49834,6 +49834,107 @@
           }
         }
       ]
+    },
+    {
+      "name": "46. Session URL Token-Telemetry Opt-In",
+      "description": "Pins the headerless-client route /s/<session>/t/... . Bifrost must strip both URL control segments before routing, while token telemetry remains disabled unless the selected provider explicitly allows it. These OpenAI cases would fail before the /t middleware support with an unroutable path, and would fail against hosted OpenAI if the default-off guard injected vLLM-only return_token_ids.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini session URL token telemetry defaults off",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenAI /s/<id>/t route strips controls and keeps telemetry default-off', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'session telemetry route failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body).to.not.include('return_token_ids');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":4}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/s/harness-token-telemetry/t/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "s",
+                "harness-token-telemetry",
+                "t",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini streaming session URL token telemetry defaults off",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenAI streaming /s/<id>/t route strips controls and keeps telemetry default-off', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'streaming session telemetry route failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body).to.include('data:');",
+                  "  pm.expect(body).to.not.include('return_token_ids');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"stream\":true,\"max_tokens\":4}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/s/harness-token-telemetry-stream/t/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "s",
+                "harness-token-telemetry-stream",
+                "t",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

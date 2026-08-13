@@ -557,6 +557,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		if keyStr == "x-bf-token-telemetry" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyTokenTelemetryRequested, b)
+			}
+			return true
+		}
 		// Parent request ID header (for linking MCP tool calls to parent LLM requests)
 		if keyStr == "x-bf-parent-request-id" {
 			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {

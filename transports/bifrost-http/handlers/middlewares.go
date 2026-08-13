@@ -30,6 +30,53 @@ import (
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
+// SessionPathMiddleware lets clients that cannot set custom headers carry
+// Bifrost's session ID in the endpoint URL: /s/<session-id>/<normal-path>.
+// It converts that prefix into the native x-bf-session-id header before route
+// matching. An optional /t/ segment requests token telemetry for clients that
+// cannot set custom headers: /s/<session-id>/t/<normal-path>. Provider config
+// still has to allow telemetry. The query and request body are untouched.
+func SessionPathMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !bytes.HasPrefix(ctx.Path(), []byte("/s/")) {
+				next(ctx)
+				return
+			}
+			rawURI := string(ctx.RequestURI())
+			path, query, hasQuery := strings.Cut(rawURI, "?")
+			sessionID, tail, found := strings.Cut(strings.TrimPrefix(path, "/s/"), "/")
+			if found && tail != "" && validSessionPathID(sessionID) {
+				ctx.Request.Header.Set("x-bf-session-id", sessionID)
+				if telemetryTail, telemetry := strings.CutPrefix(tail, "t/"); telemetry && telemetryTail != "" {
+					ctx.Request.Header.Set("x-bf-token-telemetry", "true")
+					tail = telemetryTail
+				}
+				strippedURI := "/" + tail
+				if hasQuery {
+					strippedURI += "?" + query
+				}
+				ctx.Request.SetRequestURI(strippedURI)
+			}
+			next(ctx)
+		}
+	}
+}
+
+func validSessionPathID(sessionID string) bool {
+	if sessionID == "" || len(sessionID) > 255 {
+		return false
+	}
+	for _, char := range sessionID {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("-._~", char) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
 func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
@@ -401,6 +448,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyTransportPostHooksActive, true)
 			// Transport pre-hooks run before the inference path stamps the
 			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
 			// be nil in HTTPTransportPreHook but populated in every other hook.

@@ -24,14 +24,17 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI's GPT API.
 type OpenAIProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
-	disableStore         bool                          // Whether to force store=false on outgoing requests
+	logger                      schemas.Logger                // Logger for provider operations
+	client                      *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient             *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig               schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest          bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse         bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig        *schemas.CustomProviderConfig // Custom provider config
+	disableStore                bool                          // Whether to force store=false on outgoing requests
+	stripResponseInputItemState bool                          // Whether to omit replayed provider-scoped Responses input state
+	upstreamSessionHeader       string                        // Provider header receiving Bifrost's internal session ID
+	allowTokenTelemetry         bool                          // Whether explicit passthrough requests may ask for token IDs/logprobs
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -68,15 +71,79 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &OpenAIProvider{
-		logger:               logger,
-		client:               client,
-		streamingClient:      streamingClient,
-		networkConfig:        config.NetworkConfig,
-		sendBackRawRequest:   config.SendBackRawRequest,
-		sendBackRawResponse:  config.SendBackRawResponse,
-		customProviderConfig: config.CustomProviderConfig,
-		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		logger:                      logger,
+		client:                      client,
+		streamingClient:             streamingClient,
+		networkConfig:               config.NetworkConfig,
+		sendBackRawRequest:          config.SendBackRawRequest,
+		sendBackRawResponse:         config.SendBackRawResponse,
+		customProviderConfig:        config.CustomProviderConfig,
+		disableStore:                config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		stripResponseInputItemState: config.OpenAIConfig != nil && config.OpenAIConfig.StripResponseInputItemState,
+		upstreamSessionHeader:       upstreamSessionHeader(config.OpenAIConfig),
+		allowTokenTelemetry:         config.OpenAIConfig != nil && config.OpenAIConfig.AllowTokenTelemetry,
 	}
+}
+
+func upstreamSessionHeader(config *schemas.OpenAIConfig) string {
+	if config == nil {
+		return ""
+	}
+	header := strings.TrimSpace(config.UpstreamSessionHeader)
+	// Bifrost metadata and credentials must never be reflected upstream.  The
+	// configured provider header is an operator-owned capability, not a way for
+	// callers to choose arbitrary forwarding headers.
+	if header == "" || strings.EqualFold(header, "authorization") ||
+		strings.HasPrefix(strings.ToLower(header), "x-bf-") ||
+		strings.ContainsAny(header, "\r\n: \t") {
+		return ""
+	}
+	return header
+}
+
+// prepareRequestContext maps Bifrost's protocol-neutral session identity to a
+// provider-owned header only when that provider explicitly opts in.  This lets
+// gateways use their native sticky routing/prompt cache without teaching every
+// harness a vendor header or leaking x-bf-session-id upstream.
+func (provider *OpenAIProvider) prepareRequestContext(ctx *schemas.BifrostContext) {
+	if ctx == nil || provider.upstreamSessionHeader == "" {
+		return
+	}
+	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+
+	headers := make(map[string][]string)
+	if existing, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for key, values := range existing {
+			headers[key] = append([]string(nil), values...)
+		}
+	}
+	headers[provider.upstreamSessionHeader] = []string{sessionID}
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
+}
+
+// withoutResponseInputItemState clones the request's input slice and removes
+// provider-issued state that some stateless OpenAI-compatible gateways reject
+// when it is replayed on another connection. call_id and the reasoning item
+// itself stay intact so tool-call and conversation ordering are preserved.
+func withoutResponseInputItemState(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil || len(request.Input) == 0 {
+		return request
+	}
+	cloned := *request
+	cloned.Input = append([]schemas.ResponsesMessage(nil), request.Input...)
+	for i := range cloned.Input {
+		cloned.Input[i].ID = nil
+		if cloned.Input[i].ResponsesReasoning != nil && cloned.Input[i].ResponsesReasoning.EncryptedContent != nil {
+			reasoning := *cloned.Input[i].ResponsesReasoning
+			reasoning.EncryptedContent = nil
+			cloned.Input[i].ResponsesReasoning = &reasoning
+		}
+	}
+	return &cloned
 }
 
 // GetProviderKey returns the provider identifier for OpenAI.
@@ -86,6 +153,7 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	provider.prepareRequestContext(ctx)
 	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
@@ -771,6 +839,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
+	request = provider.prepareChatTokenTelemetry(ctx, request)
 
 	if provider.disableStore {
 		if request.Params == nil {
@@ -956,6 +1025,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+	request = provider.prepareChatTokenTelemetry(ctx, request)
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ChatParameters{}
@@ -985,6 +1055,41 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// prepareChatTokenTelemetry clones only the request layers it modifies. This
+// path covers translated Anthropic/Gemini/Responses clients when their custom
+// OpenAI provider is configured to fall back to Chat Completions. The ingress
+// request remains immutable for client-wire logging and retries.
+func (provider *OpenAIProvider) prepareChatTokenTelemetry(
+	ctx *schemas.BifrostContext,
+	request *schemas.BifrostChatRequest,
+) *schemas.BifrostChatRequest {
+	if !provider.allowTokenTelemetry || ctx == nil || request == nil {
+		return request
+	}
+	requested, _ := ctx.Value(schemas.BifrostContextKeyTokenTelemetryRequested).(bool)
+	if !requested {
+		return request
+	}
+
+	cloned := *request
+	params := schemas.ChatParameters{}
+	if request.Params != nil {
+		params = *request.Params
+	}
+	params.ExtraParams = maps.Clone(params.ExtraParams)
+	if params.ExtraParams == nil {
+		params.ExtraParams = make(map[string]interface{}, 1)
+	}
+	if params.LogProbs == nil {
+		params.LogProbs = schemas.Ptr(true)
+	}
+	if _, exists := params.ExtraParams["return_token_ids"]; !exists {
+		params.ExtraParams["return_token_ids"] = true
+	}
+	cloned.Params = &params
+	return &cloned
 }
 
 // HandleOpenAIChatCompletionStreaming handles streaming for OpenAI-compatible APIs.
@@ -1205,6 +1310,11 @@ func HandleOpenAIChatCompletionStreaming(
 		// regression in ToBifrostResponsesStreamResponse) is treated as truncation
 		// instead of a silent stream close.
 		fallbackFinishReasonSeen := false
+		// Non-fallback Chat may receive provider-only chunks (for example vLLM's
+		// initial prompt_token_ids chunk) that intentionally produce no client
+		// delta. Keep their raw bytes with the next forwarded chunk so raw logging
+		// remains token-faithful without exposing an extra empty SSE event.
+		var pendingRawResponse strings.Builder
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1225,6 +1335,12 @@ func HandleOpenAIChatCompletionStreaming(
 				break
 			}
 			jsonData := string(data)
+			if sendBackRawResponse && !isResponsesToChatCompletionsFallback {
+				if pendingRawResponse.Len() > 0 {
+					pendingRawResponse.WriteString("\n\n")
+				}
+				pendingRawResponse.WriteString(jsonData)
+			}
 
 			// Quick check for error field (allocation-free using sonic.GetFromString)
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
@@ -1423,7 +1539,8 @@ func HandleOpenAIChatCompletionStreaming(
 					lastChunkTime = time.Now()
 
 					if sendBackRawResponse {
-						response.ExtraFields.RawResponse = jsonData
+						response.ExtraFields.RawResponse = pendingRawResponse.String()
+						pendingRawResponse.Reset()
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1486,6 +1603,9 @@ func HandleOpenAIChatCompletionStreaming(
 			if sendBackRawRequest {
 				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 			}
+			if sendBackRawResponse && pendingRawResponse.Len() > 0 {
+				response.ExtraFields.RawResponse = pendingRawResponse.String()
+			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1508,6 +1628,9 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
+	}
+	if provider.stripResponseInputItemState {
+		request = withoutResponseInputItemState(request)
 	}
 
 	if provider.disableStore {
@@ -1688,6 +1811,9 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+	if provider.stripResponseInputItemState {
+		request = withoutResponseInputItemState(request)
 	}
 	if provider.disableStore {
 		if request.Params == nil {
@@ -7456,6 +7582,7 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	url := provider.buildPassthroughURL(req)
+	upstreamBody, tokenTelemetry := provider.preparePassthroughTokenTelemetry(ctx, req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7475,7 +7602,7 @@ func (provider *OpenAIProvider) Passthrough(
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	fasthttpReq.SetBody(upstreamBody)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
@@ -7507,8 +7634,50 @@ func (provider *OpenAIProvider) Passthrough(
 		},
 		PassthroughUsage: passthroughUsage,
 	}
+	if tokenTelemetry {
+		// PassthroughRequestBody remains the byte-exact client request. RawRequest
+		// records the actual upstream request separately when raw log storage is on.
+		bifrostResponse.ExtraFields.RawRequest = string(upstreamBody)
+	}
 
 	return bifrostResponse, nil
+}
+
+// preparePassthroughTokenTelemetry adds the vLLM/SGLang token surfaces only
+// when both the operator and this request opt in. The original passthrough
+// request is never mutated: logging and client-wire audits must continue to see
+// exactly what the harness sent. Existing client values win, including false.
+func (provider *OpenAIProvider) preparePassthroughTokenTelemetry(
+	ctx *schemas.BifrostContext,
+	req *schemas.BifrostPassthroughRequest,
+) ([]byte, bool) {
+	if req == nil {
+		return nil, false
+	}
+	if !provider.allowTokenTelemetry || ctx == nil || req.Method != http.MethodPost {
+		return req.Body, false
+	}
+	requested, _ := ctx.Value(schemas.BifrostContextKeyTokenTelemetryRequested).(bool)
+	path := "/" + strings.TrimLeft(req.Path, "/")
+	if !requested || (path != "/v1/chat/completions" && path != "/chat/completions") {
+		return req.Body, false
+	}
+
+	body := req.Body
+	var err error
+	if !providerUtils.JSONFieldExists(body, "logprobs") {
+		body, err = providerUtils.SetRawJSONField(body, "logprobs", []byte("true"))
+		if err != nil {
+			return req.Body, false
+		}
+	}
+	if !providerUtils.JSONFieldExists(body, "return_token_ids") {
+		body, err = providerUtils.SetRawJSONField(body, "return_token_ids", []byte("true"))
+		if err != nil {
+			return req.Body, false
+		}
+	}
+	return body, true
 }
 
 // buildPassthroughURL returns the upstream URL for raw passthrough requests.
@@ -7552,6 +7721,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	url := provider.buildPassthroughURL(req)
+	upstreamBody, _ := provider.preparePassthroughTokenTelemetry(ctx, req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7573,7 +7743,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	fasthttpReq.SetBody(upstreamBody)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 
@@ -7617,13 +7787,13 @@ func (provider *OpenAIProvider) PassthroughStream(
 			StatusCode:       resp.StatusCode(),
 			Headers:          headers,
 			Path:             req.Path,
-			RawRequest:       req.Body,
-			CancellationBody: providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
+			RawRequest:       upstreamBody,
+			CancellationBody: providerUtils.PassthroughJSONBody(fasthttpReq, upstreamBody),
 			StartTime:        startTime,
 			Logger:           provider.logger,
 			HasUsage:         HasOpenAIPassthroughUsage,
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+				return ExtractOpenAIPassthroughUsage(req.Method, req.Path, upstreamBody, event)
 			},
 		},
 	), nil

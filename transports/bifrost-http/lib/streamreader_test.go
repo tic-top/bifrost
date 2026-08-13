@@ -1071,6 +1071,30 @@ func TestSSEStreamReaderSendDoneByteExact(t *testing.T) {
 	}
 }
 
+func TestSSEStreamReaderCapturePreservesExactEnqueuedFrames(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.EnableCapture()
+
+	frames := [][]byte{
+		[]byte("data: {\"candidates\":[{\"index\":0}]}\n\n"),
+		[]byte("data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"),
+	}
+	for _, frame := range frames {
+		if !r.Send(frame) {
+			t.Fatal("Send() unexpectedly reported a closed reader")
+		}
+		buf := make([]byte, len(frame))
+		if _, err := io.ReadFull(r, buf); err != nil {
+			t.Fatalf("ReadFull() error = %v", err)
+		}
+	}
+
+	want := append(append([]byte(nil), frames[0]...), frames[1]...)
+	if got := r.CapturedBytes(); !bytes.Equal(got, want) {
+		t.Fatalf("CapturedBytes() = %q, want %q", got, want)
+	}
+}
+
 // TestSSEStreamReaderConcurrentSendEvent verifies thread safety of SendEvent
 // with multiple concurrent producers (not a real pattern but validates safety).
 func TestSSEStreamReaderConcurrentSendEvent(t *testing.T) {

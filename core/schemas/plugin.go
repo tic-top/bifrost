@@ -95,6 +95,22 @@ type HTTPResponse struct {
 	Body       []byte            `json:"body"`
 }
 
+// ClientWireMetadata identifies the client-facing HTTP exchange. It is fixed
+// size apart from short route strings and is safe to pass through transport
+// callbacks; response-sized data must remain outside BifrostContext.
+type ClientWireMetadata struct {
+	Method     string
+	Path       string
+	RawQuery   string
+	StatusCode int
+}
+
+// ClientWireRecorder receives the exact client-facing HTTP bodies for one
+// translated integration request. It is installed by an HTTP transport plugin
+// and invoked after response conversion. Implementations must copy any bytes
+// they retain because transport-owned buffers are short-lived.
+type ClientWireRecorder func(ctx *BifrostContext, metadata ClientWireMetadata, requestBody, responseBody []byte)
+
 // httpRequestPool is the pool for HTTPRequest objects to reduce allocations.
 var httpRequestPool = sync.Pool{
 	New: func() any {

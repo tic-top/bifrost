@@ -506,6 +506,13 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 			return accumulator.ChatStreamChunks[i].ChunkIndex < accumulator.ChatStreamChunks[j].ChunkIndex
 		})
 		var rawBuilder strings.Builder
+		rawBytes := 0
+		for _, chunk := range accumulator.ChatStreamChunks {
+			if chunk.RawResponse != nil {
+				rawBytes += len(*chunk.RawResponse) + 2
+			}
+		}
+		rawBuilder.Grow(rawBytes)
 		for _, chunk := range accumulator.ChatStreamChunks {
 			if chunk.RawResponse != nil {
 				if rawBuilder.Len() > 0 {

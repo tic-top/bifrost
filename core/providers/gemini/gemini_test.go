@@ -4278,6 +4278,37 @@ func TestFunctionCallingConfigModeAny_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestFunctionCallingConfig_UsesValidResponsesToolChoiceShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    gemini.FunctionCallingConfigMode
+		allowed []string
+		want    string
+	}{
+		{name: "auto", mode: gemini.FunctionCallingConfigModeAuto, want: `"auto"`},
+		{name: "any", mode: gemini.FunctionCallingConfigModeAny, want: `"required"`},
+		{name: "none", mode: gemini.FunctionCallingConfigModeNone, want: `"none"`},
+		{name: "one required function", mode: gemini.FunctionCallingConfigModeAny, allowed: []string{"ping"}, want: `{"name":"ping","type":"function"}`},
+		{name: "auto allow list", mode: gemini.FunctionCallingConfigModeAuto, allowed: []string{"ping", "pong"}, want: `{"mode":"auto","tools":[{"name":"ping","type":"function"},{"name":"pong","type":"function"}],"type":"allowed_tools"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := (&gemini.GeminiGenerationRequest{
+				Model:    "model",
+				Contents: []gemini.Content{{Role: "user", Parts: []*gemini.Part{{Text: "hi"}}}},
+				ToolConfig: &gemini.ToolConfig{FunctionCallingConfig: &gemini.FunctionCallingConfig{
+					Mode: tt.mode, AllowedFunctionNames: tt.allowed,
+				}},
+			}).ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NotNil(t, req.Params.ToolChoice)
+			got, err := json.Marshal(req.Params.ToolChoice)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(got))
+		})
+	}
+}
+
 // TestMultimodalFunctionResponse_RoundTrip verifies that an image returned by a tool
 // inside functionResponse.parts survives the full
 // GeminiGenerationRequest → BifrostResponsesRequest → GeminiGenerationRequest round-trip

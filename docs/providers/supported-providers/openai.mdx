@@ -62,7 +62,10 @@ Configure OpenAI as a provider.
         }
       ],
       "openai_config": {
-        "disable_store": false
+        "disable_store": false,
+        "strip_response_input_item_state": false,
+        "allow_token_telemetry": false,
+        "upstream_session_header": ""
       }
     }
   }
@@ -88,7 +91,12 @@ case schemas.OpenAI:
 </Tab>
 </Tabs>
 
-Optional provider settings include `network_config` for timeouts, retries, proxy/TLS settings, and `openai_config.disable_store` to force `store=false` on outgoing OpenAI requests.
+Optional provider settings include `network_config` for timeouts, retries, proxy/TLS settings, and:
+
+- `openai_config.disable_store` forces `store=false` on outgoing OpenAI requests.
+- `openai_config.strip_response_input_item_state` removes provider-scoped item IDs and encrypted reasoning state when replaying Responses input to a stateless compatible gateway.
+- `openai_config.allow_token_telemetry` permits a request with `x-bf-token-telemetry: true` to add missing `logprobs=true` and `return_token_ids=true` fields on OpenAI Chat passthrough. This is intended for compatible self-hosted vLLM/SGLang endpoints and remains disabled by default. Existing request values are never overwritten.
+- `openai_config.upstream_session_header` maps Bifrost's protocol-neutral session ID to an operator-configured upstream header. This is useful when a compatible gateway requires its own sticky-routing header for prompt-cache locality. Bifrost never forwards `x-bf-session-id` itself; internal `x-bf-*` and credential headers are rejected here.
 
 ---
 

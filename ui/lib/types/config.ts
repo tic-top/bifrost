@@ -403,6 +403,9 @@ export interface CustomProviderConfig {
 // OpenAIConfig holds OpenAI-specific provider configuration.
 export interface OpenAIConfig {
 	disable_store?: boolean;
+	strip_response_input_item_state?: boolean;
+	allow_token_telemetry?: boolean;
+	upstream_session_header?: string;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig

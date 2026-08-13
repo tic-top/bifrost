@@ -562,7 +562,10 @@ type ProviderConfig struct {
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
-	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	DisableStore                bool   `json:"disable_store"`                     // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	StripResponseInputItemState bool   `json:"strip_response_input_item_state"`   // Compatibility for gateways that reject replayed provider-scoped Responses state
+	UpstreamSessionHeader       string `json:"upstream_session_header,omitempty"` // Optional provider header populated from Bifrost's session ID (for upstream cache/stickiness)
+	AllowTokenTelemetry         bool   `json:"allow_token_telemetry"`             // Allow explicit per-request token ID/logprob capture on OpenAI Chat passthrough
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
